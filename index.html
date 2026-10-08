@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tilt-it · 미니어처 필터</title>
+  <meta name="description" content="사진을 올리면 브라우저 안의 AI가 거리감을 읽어 미니어처(틸트시프트) 효과를 입혀 줍니다. 사진은 서버로 전송되지 않습니다." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { -webkit-tap-highlight-color: transparent; }
+    .stage[data-state="idle"] .dot { background: #d6d3d1; }
+    .stage[data-state="active"] .dot { background: #f59e0b; animation: pulse 1s ease-in-out infinite; }
+    .stage[data-state="done"] .dot { background: #10b981; }
+    .stage[data-state="error"] .dot { background: #ef4444; }
+    .stage[data-state="idle"] .label { color: #a8a29e; }
+    .stage[data-state="error"] .detail { color: #dc2626; }
+    @keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
+    .dropzone.dragging { border-color: #f59e0b; background: #fffbeb; }
+    input[type="range"] { accent-color: #d97706; }
+    .view-tab[aria-pressed="true"] { background: #fff; color: #1c1917; box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+  </style>
+</head>
+<body class="min-h-screen bg-stone-100 text-stone-800 antialiased">
+  <main class="mx-auto max-w-5xl px-4 py-8 sm:py-12">
+    <header class="mb-8">
+      <h1 class="text-3xl font-bold tracking-tight text-stone-900 sm:text-4xl">Tilt-it <span class="text-amber-600">·</span> 미니어처 필터</h1>
+      <p class="mt-2 text-stone-600">사진을 올리면 AI가 거리감을 읽어 장난감 마을처럼 보이는 틸트시프트 효과를 입혀 줍니다.
+        모든 처리는 이 브라우저 안에서만 이뤄지고, 사진은 어디에도 업로드되지 않아요.</p>
+    </header>
+
+    <div class="grid gap-6 lg:grid-cols-[1fr_320px]">
+      <!-- 업로드 + 결과 -->
+      <section class="space-y-4">
+        <label id="dropzone" for="file-input"
+          class="dropzone flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-stone-300 bg-white px-6 py-10 text-center transition hover:border-amber-400">
+          <svg class="h-10 w-10 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5V18a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18v-1.5M7.5 9 12 4.5m0 0L16.5 9M12 4.5V15" />
+          </svg>
+          <span class="font-semibold text-stone-900">사진 선택하기</span>
+          <span class="text-sm text-stone-500">또는 여기로 끌어다 놓기 · 높은 곳에서 내려다본 풍경 사진이 가장 잘 어울려요</span>
+          <input id="file-input" type="file" accept="image/*" class="sr-only" />
+        </label>
+
+        <div id="result-card" class="hidden overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-stone-200">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-stone-100 px-4 py-3">
+            <div class="inline-flex rounded-lg bg-stone-100 p-1 text-sm" role="group" aria-label="보기 전환">
+              <button type="button" class="view-tab rounded-md px-3 py-1.5 font-medium text-stone-500" data-view="result" aria-pressed="true">결과</button>
+              <button type="button" class="view-tab rounded-md px-3 py-1.5 font-medium text-stone-500" data-view="original" aria-pressed="false">원본</button>
+              <button type="button" class="view-tab rounded-md px-3 py-1.5 font-medium text-stone-500" data-view="depth" aria-pressed="false">뎁스맵</button>
+            </div>
+            <button id="download-btn" type="button" disabled
+              class="rounded-lg bg-stone-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40">
+              결과 저장
+            </button>
+          </div>
+          <div class="relative bg-stone-50 p-2 sm:p-4">
+            <div id="canvas-overlay" class="pointer-events-none absolute inset-x-0 top-6 z-10 mx-auto hidden w-fit max-w-[90%] rounded-full bg-stone-900/80 px-4 py-1.5 text-center text-xs text-white shadow"></div>
+            <canvas id="canvas" class="mx-auto block h-auto max-w-full cursor-crosshair rounded-lg"></canvas>
+            <p id="canvas-hint" class="pointer-events-none mt-2 text-center text-xs text-stone-500">사진을 탭하면 그 지점에 초점을 맞춰요</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 상태 + 조절 -->
+      <aside class="space-y-4">
+        <section class="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-200" aria-live="polite">
+          <h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-stone-500">진행 상태</h2>
+          <ol class="space-y-3 text-sm">
+            <li class="stage" data-stage="model" data-state="idle">
+              <div class="flex items-center gap-2">
+                <span class="dot h-2.5 w-2.5 shrink-0 rounded-full"></span>
+                <span class="label shrink-0 whitespace-nowrap font-medium">AI 모델 다운로드</span>
+                <span class="detail ml-auto text-right text-xs tabular-nums text-stone-500"></span>
+              </div>
+              <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-stone-100">
+                <div id="model-bar" class="h-full w-0 rounded-full bg-amber-500 transition-[width] duration-200"></div>
+              </div>
+            </li>
+            <li class="stage" data-stage="prep" data-state="idle">
+              <div class="flex items-center gap-2">
+                <span class="dot h-2.5 w-2.5 shrink-0 rounded-full"></span>
+                <span class="label shrink-0 whitespace-nowrap font-medium">이미지 전처리 중</span>
+                <span class="detail ml-auto text-right text-xs tabular-nums text-stone-500"></span>
+              </div>
+            </li>
+            <li class="stage" data-stage="depth" data-state="idle">
+              <div class="flex items-center gap-2">
+                <span class="dot h-2.5 w-2.5 shrink-0 rounded-full"></span>
+                <span class="label shrink-0 whitespace-nowrap font-medium">거리감 계산 중</span>
+                <span class="detail ml-auto text-right text-xs tabular-nums text-stone-500"></span>
+              </div>
+            </li>
+            <li class="stage" data-stage="filter" data-state="idle">
+              <div class="flex items-center gap-2">
+                <span class="dot h-2.5 w-2.5 shrink-0 rounded-full"></span>
+                <span class="label shrink-0 whitespace-nowrap font-medium">필터 적용 중</span>
+                <span class="detail ml-auto text-right text-xs tabular-nums text-stone-500"></span>
+              </div>
+            </li>
+          </ol>
+          <p id="status-text" class="mt-4 rounded-lg bg-stone-50 px-3 py-2 text-sm text-stone-600">AI 모델을 준비하고 있어요. 처음 한 번만 약 27MB를 내려받아요.</p>
+        </section>
+
+        <section id="controls" class="hidden rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-200">
+          <h2 class="mb-4 text-sm font-semibold uppercase tracking-wider text-stone-500">효과 조절</h2>
+          <div class="space-y-4 text-sm">
+            <label class="block">
+              <span class="flex justify-between"><span class="font-medium">초점 거리</span><span id="focus-value" class="tabular-nums text-stone-500"></span></span>
+              <input id="focus" type="range" min="0" max="100" value="85" class="mt-1 w-full" />
+              <span class="flex justify-between text-xs text-stone-400"><span>먼 곳</span><span>가까운 곳</span></span>
+            </label>
+            <label class="block">
+              <span class="flex justify-between"><span class="font-medium">선명한 범위</span><span id="range-value" class="tabular-nums text-stone-500"></span></span>
+              <input id="range" type="range" min="2" max="80" value="25" class="mt-1 w-full" />
+            </label>
+            <label class="block">
+              <span class="flex justify-between"><span class="font-medium">블러 강도</span><span id="strength-value" class="tabular-nums text-stone-500"></span></span>
+              <input id="strength" type="range" min="0" max="100" value="80" class="mt-1 w-full" />
+            </label>
+            <label class="block">
+              <span class="flex justify-between"><span class="font-medium">장난감 색감</span><span id="color-value" class="tabular-nums text-stone-500"></span></span>
+              <input id="color" type="range" min="100" max="170" value="130" class="mt-1 w-full" />
+            </label>
+            <label class="flex items-center gap-2">
+              <input id="blur-near" type="checkbox" class="h-4 w-4 accent-amber-600" />
+              <span>초점보다 가까운 곳도 흐리게 (클래식 틸트시프트)</span>
+            </label>
+            <button id="reset-btn" type="button" class="w-full rounded-lg border border-stone-200 px-3 py-2 font-medium text-stone-600 transition hover:bg-stone-50">기본값으로</button>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <footer class="mt-12 text-center text-xs text-stone-400">
+      뎁스 추정: Depth Anything (Apache-2.0) · Transformers.js로 브라우저에서 실행 · 사진은 서버로 전송되지 않습니다
+    </footer>
+  </main>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
